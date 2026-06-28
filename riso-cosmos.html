@@ -1,0 +1,891 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Riso Cosmos — shader identity prototype</title>
+<style>
+  :root{
+    --ink:#1a1726;
+    --paper:#efe7d6;
+    --hud-bg:rgba(20,18,30,0.82);
+    --hud-line:rgba(239,231,214,0.16);
+    --accent:#e8643c;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:#0c0a12;color:var(--paper);
+    font-family:"Space Grotesk",ui-monospace,"SF Mono",Menlo,monospace;
+    -webkit-font-smoothing:antialiased;overflow:hidden;touch-action:none}
+  #stage{position:fixed;inset:0;display:grid;place-items:center}
+  /* The two source canvases are hidden; only the GL canvas shows */
+  #scene2d,#id2d{position:absolute;left:-99999px;top:0}
+  #gl{display:block;width:auto;height:100%;max-width:100%;
+    image-rendering:auto;box-shadow:0 0 0 1px rgba(0,0,0,0.6),0 30px 80px rgba(0,0,0,0.55)}
+
+  /* ---- HUD ---- */
+  #hud{position:fixed;left:0;right:0;bottom:0;z-index:10;
+    background:var(--hud-bg);backdrop-filter:blur(10px);
+    border-top:1px solid var(--hud-line);
+    padding:10px 12px calc(10px + env(safe-area-inset-bottom)) 12px;
+    transition:transform .28s cubic-bezier(.2,.8,.2,1)}
+  #hud.collapsed{transform:translateY(calc(100% - 42px))}
+  .hud-grip{display:flex;align-items:center;gap:10px;height:22px;margin-bottom:8px;cursor:pointer;user-select:none}
+  .hud-grip .bar{flex:1;height:1px;background:var(--hud-line)}
+  .hud-grip .lbl{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:rgba(239,231,214,.62)}
+  .row{display:flex;align-items:center;gap:10px;margin:7px 0}
+  .row label{flex:0 0 92px;font-size:11px;letter-spacing:.04em;color:rgba(239,231,214,.8)}
+  .row input[type=range]{flex:1;-webkit-appearance:none;height:3px;border-radius:2px;
+    background:rgba(239,231,214,.18);outline:none}
+  .row input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;
+    background:var(--accent);border:2px solid var(--paper);cursor:pointer}
+  .row input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;
+    background:var(--accent);border:2px solid var(--paper);cursor:pointer;border:none}
+  .row .val{flex:0 0 34px;text-align:right;font-size:11px;color:rgba(239,231,214,.55);font-variant-numeric:tabular-nums}
+  .toprow{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+  .btn{appearance:none;border:1px solid var(--hud-line);background:rgba(239,231,214,.04);
+    color:var(--paper);font:inherit;font-size:11px;letter-spacing:.06em;
+    padding:8px 12px;border-radius:8px;cursor:pointer;text-transform:uppercase}
+  .btn:hover{background:rgba(239,231,214,.1)}
+  .btn.active{background:var(--accent);border-color:var(--accent);color:#1a1018;font-weight:700}
+  .seg{display:flex;border:1px solid var(--hud-line);border-radius:8px;overflow:hidden}
+  .seg .btn{border:none;border-radius:0;border-right:1px solid var(--hud-line)}
+  .seg .btn:last-child{border-right:none}
+  .hint{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:10;
+    font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:rgba(239,231,214,.45);
+    background:rgba(12,10,18,.5);padding:6px 12px;border-radius:20px;pointer-events:none;
+    transition:opacity .4s;text-align:center}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}
+  @media (max-width:560px){.cols{grid-template-columns:1fr}}
+  .fps{position:fixed;top:14px;right:14px;z-index:10;font-size:11px;
+    color:rgba(239,231,214,.4);font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="scene2d"></canvas>
+  <canvas id="id2d"></canvas>
+  <canvas id="gl"></canvas>
+</div>
+
+<div class="hint" id="hint">tap to putt · drag the panel down to see the full frame</div>
+<div class="fps" id="fps">—</div>
+
+<div id="hud">
+  <div class="hud-grip" id="grip"><span class="lbl">Riso Cosmos</span><span class="bar"></span><span class="lbl" id="gripState">hide ▾</span></div>
+
+  <div class="toprow">
+    <div class="seg" id="modeSeg">
+      <button class="btn active" data-mode="post">Post on</button>
+      <button class="btn" data-mode="raw">Raw 2D</button>
+      <button class="btn" data-mode="split">Split</button>
+    </div>
+    <button class="btn" id="planetBtn">Planet: Earth</button>
+    <button class="btn" id="presetBtn">Preset: Full</button>
+  </div>
+
+  <div class="cols">
+    <div class="row"><label>Palette</label><input type="range" id="s_palette" min="0" max="100" value="100"><span class="val" id="v_palette">100</span></div>
+    <div class="row"><label>Halftone</label><input type="range" id="s_halftone" min="0" max="100" value="70"><span class="val" id="v_halftone">70</span></div>
+    <div class="row"><label>Dither</label><input type="range" id="s_dither" min="0" max="100" value="55"><span class="val" id="v_dither">55</span></div>
+    <div class="row"><label>Grain</label><input type="range" id="s_grain" min="0" max="100" value="45"><span class="val" id="v_grain">45</span></div>
+    <div class="row"><label>Outline</label><input type="range" id="s_outline" min="0" max="100" value="60"><span class="val" id="v_outline">60</span></div>
+    <div class="row"><label>Plasma sky</label><input type="range" id="s_plasma" min="0" max="100" value="65"><span class="val" id="v_plasma">65</span></div>
+    <div class="row"><label>Bloom</label><input type="range" id="s_bloom" min="0" max="100" value="40"><span class="val" id="v_bloom">40</span></div>
+    <div class="row"><label>Vignette</label><input type="range" id="s_vignette" min="0" max="100" value="50"><span class="val" id="v_vignette">50</span></div>
+  </div>
+</div>
+
+<script>
+/* =========================================================================
+   RISO COSMOS — flat-vector space golf with a Canvas2D -> WebGL1 post stack
+   Architecture:
+     1) scene2d  : the flat color scene (solid fills, no texture)
+     2) id2d     : a low-res REGION-ID buffer (sky=1, ground=2, ball=3, ...)
+                   so the post keys palette/effects off WHAT a region is,
+                   not how bright it is -> fixes iso-luminant sky/grass.
+     3) gl       : WebGL1 full-screen post that reads both textures and runs
+                   palette-index -> halftone -> dither -> grain -> outline ->
+                   plasma sky -> bloom -> vignette.
+   ========================================================================= */
+
+(function(){
+'use strict';
+
+// ---- region IDs (must match shader) ----
+var ID_SKY=1, ID_GROUND=2, ID_BALL=3, ID_FLAG=4, ID_CUP=5, ID_SUN=6, ID_HILL=7, ID_STAR=8;
+
+// ---- planets: each is a small palette + sky/ground feel ----
+// colors are authored in sRGB 0..255; the shader treats them as palette stops.
+var PLANETS = [
+  { name:'Earth',
+    sky:[ 86,154,214], ground:[ 92,168, 84], hill:[ 70,132, 96],
+    sun:[247,214,138], paper:[239,231,214], ink:[ 26,23,38],
+    ball:[245,245,238], flag:[224, 86, 64], cup:[ 30,28,40], space:false },
+  { name:'Moon',
+    sky:[ 14,14,20],  ground:[150,150,158], hill:[110,110,120],
+    sun:[235,235,225], paper:[ 28,28,34],  ink:[226,226,232],
+    ball:[245,245,238], flag:[224, 86, 64], cup:[ 12,12,16], space:true },
+  { name:'Mars',
+    sky:[214,142, 96], ground:[176, 78, 52], hill:[140, 58, 44],
+    sun:[250,224,180], paper:[244,226,200], ink:[ 48,24,20],
+    ball:[245,245,238], flag:[ 70,120,180], cup:[ 36,18,16], space:false },
+  { name:'Neptune',
+    sky:[ 60, 86,176], ground:[ 64,128,168], hill:[ 48,168,176],
+    sun:[200,228,255], paper:[214,226,238], ink:[ 16,20,44],
+    ball:[245,245,238], flag:[255,196, 84], cup:[ 14,18,40], space:true },
+];
+var planetIdx = 0;
+
+// =========================================================================
+//  SCENE STATE
+// =========================================================================
+var W=0,H=0,DPR=1;
+var scene = document.getElementById('scene2d');
+var idc   = document.getElementById('id2d');
+var sctx  = scene.getContext('2d');
+var ictx  = idc.getContext('2d', {willReadFrequently:false});
+
+// low-res id buffer scale (keeps texImage2D cheap; outline/halftone don't need full res)
+var ID_SCALE = 0.5;
+
+// terrain as a polyline; regenerated per planet/hole
+var terrain = [];
+var hole = {x:0, cupY:0, flagH:0};
+var ball = {x:0,y:0, vx:0,vy:0, moving:false, radius:0, rest:true};
+var stars = [];
+var hills = []; // parallax silhouette layers
+var sunPos = {x:0,y:0,r:0};
+var camShake = 0;
+var flash = 0; // event flash 0..1 decays
+var tee = {x:0,y:0};
+
+function rand(s){ // tiny deterministic-ish helper
+  return Math.random();
+}
+
+function regenWorld(){
+  // sun
+  sunPos.r = Math.min(W,H)*0.10;
+  sunPos.x = W*0.74; sunPos.y = H*0.20;
+
+  // parallax hills (3 layers)
+  hills = [];
+  var layers = 3;
+  for(var L=0; L<layers; L++){
+    var pts=[]; var baseY = H*(0.52 + L*0.055);
+    var amp = H*(0.05 - L*0.012);
+    var n = 7;
+    for(var i=0;i<=n;i++){
+      pts.push({ x:(i/n)*W, y: baseY + Math.sin(i*1.3 + L*2.1)*amp + (Math.random()-0.5)*amp*0.6 });
+    }
+    hills.push({pts:pts, depth:L});
+  }
+
+  // terrain polyline (the playable ground)
+  terrain = [];
+  var segs = 26;
+  var gy = H*0.66;
+  var amp2 = H*0.10;
+  for(var i=0;i<=segs;i++){
+    var t=i/segs;
+    var y = gy
+      + Math.sin(t*6.2 + 1.0)*amp2*0.6
+      + Math.sin(t*13.0 + 0.5)*amp2*0.25
+      + (Math.random()-0.5)*amp2*0.15;
+    terrain.push({x:t*W, y:y});
+  }
+  // flatten a tee area (left) and a green/cup area (right)
+  flattenZone(0.06, 0.16);
+  flattenZone(0.78, 0.90);
+
+  // tee + ball
+  var teeT = 0.11;
+  tee.x = teeT*W; tee.y = sampleGround(tee.x) - 1;
+  ball.radius = Math.max(7, Math.min(W,H)*0.011);
+  resetBall();
+
+  // hole/cup on the right green
+  hole.x = 0.85*W;
+  hole.cupY = sampleGround(hole.x);
+  hole.flagH = Math.min(W,H)*0.12;
+
+  // starfield (space planets get more)
+  stars = [];
+  var count = PLANETS[planetIdx].space ? 220 : 80;
+  for(var s=0;s<count;s++){
+    stars.push({ x:Math.random()*W, y:Math.random()*H*0.6,
+                 r: Math.random()*1.6+0.3, tw: Math.random()*6.28 });
+  }
+}
+
+function flattenZone(t0,t1){
+  var y=null;
+  for(var i=0;i<terrain.length;i++){
+    var t=terrain[i].x/W;
+    if(t>=t0 && t<=t1){ if(y===null) y=terrain[i].y; terrain[i].y=y; }
+  }
+}
+
+function sampleGround(x){
+  // linear interpolation along the terrain polyline
+  if(x<=terrain[0].x) return terrain[0].y;
+  for(var i=1;i<terrain.length;i++){
+    if(x<=terrain[i].x){
+      var a=terrain[i-1], b=terrain[i];
+      var f=(x-a.x)/(b.x-a.x);
+      return a.y+(b.y-a.y)*f;
+    }
+  }
+  return terrain[terrain.length-1].y;
+}
+function groundSlope(x){
+  var d=Math.max(2,W*0.004);
+  return (sampleGround(x+d)-sampleGround(x-d))/(2*d);
+}
+
+function resetBall(){
+  ball.x=tee.x; ball.y=tee.y-ball.radius;
+  ball.vx=0; ball.vy=0; ball.moving=false; ball.rest=true;
+}
+
+// =========================================================================
+//  PHYSICS  (simple, juicy enough to show motion)
+// =========================================================================
+var GRAV;
+function stepPhysics(dt){
+  if(ball.rest) return;
+  GRAV = H*1.1;
+  ball.vy += GRAV*dt;
+  ball.x  += ball.vx*dt;
+  ball.y  += ball.vy*dt;
+
+  var gy = sampleGround(ball.x) - ball.radius;
+  if(ball.y >= gy){
+    ball.y = gy;
+    var slope = groundSlope(ball.x);
+    // reflect velocity along slope normal-ish, lose energy
+    var nx = -slope, ny = 1; var nl=Math.hypot(nx,ny); nx/=nl; ny/=nl;
+    var dot = ball.vx*nx + ball.vy*ny;
+    ball.vx -= 1.5*dot*nx; ball.vy -= 1.5*dot*ny;
+    ball.vx *= 0.72; ball.vy *= 0.42;
+    // roll along slope
+    ball.vx += -slope * GRAV*dt*0.5;
+    ball.vx *= 0.985;
+    if(Math.hypot(ball.vx,ball.vy) < W*0.05){
+      ball.vx*=0.8;
+      if(Math.abs(ball.vx) < W*0.012){ ball.vx=0; ball.vy=0; ball.rest=true; ball.moving=false; }
+    }
+  }
+  // walls
+  if(ball.x<ball.radius){ball.x=ball.radius;ball.vx=Math.abs(ball.vx)*0.5;}
+  if(ball.x>W-ball.radius){ball.x=W-ball.radius;ball.vx=-Math.abs(ball.vx)*0.5;}
+
+  // cup capture
+  if(Math.abs(ball.x-hole.x) < ball.radius*1.4 &&
+     Math.abs(ball.y-(hole.cupY-ball.radius)) < ball.radius*2 &&
+     Math.hypot(ball.vx,ball.vy) < W*0.25){
+    sinkPutt();
+  }
+}
+
+function sinkPutt(){
+  flash = 1.0; camShake = 1.0;
+  ball.rest=true; ball.moving=false;
+  setTimeout(function(){ nextHole(); }, 650);
+}
+function nextHole(){ regenWorld(); }
+
+// putt: tap/click sets aim from ball toward pointer, power by distance
+function putt(px,py){
+  if(!ball.rest) return;
+  var dx=px-ball.x, dy=py-ball.y;
+  var d=Math.hypot(dx,dy); if(d<1) return;
+  var power = Math.min(1, d/(Math.min(W,H)*0.55));
+  var speed = power * W*1.7;
+  ball.vx = (dx/d)*speed;
+  ball.vy = (dy/d)*speed - H*0.15; // slight loft
+  ball.rest=false; ball.moving=true;
+  camShake = Math.max(camShake, 0.35*power);
+}
+
+// =========================================================================
+//  DRAW: COLOR SCENE  (flat solid fills only)
+// =========================================================================
+function drawScene(time){
+  var P = PLANETS[planetIdx];
+  // sky band
+  sctx.fillStyle = rgb(P.sky);
+  sctx.fillRect(0,0,W,H);
+
+  // stars (behind everything but sky fill) — draw as paper/ink dots
+  var starCol = P.space ? P.ink : [255,255,255];
+  for(var i=0;i<stars.length;i++){
+    var s=stars[i];
+    var a = 0.5+0.5*Math.sin(time*2.0 + s.tw);
+    sctx.globalAlpha = P.space ? (0.5+0.5*a) : 0.35*a;
+    sctx.fillStyle = rgb(starCol);
+    sctx.beginPath(); sctx.arc(s.x,s.y,s.r,0,6.2832); sctx.fill();
+  }
+  sctx.globalAlpha=1;
+
+  // sun disc (flat)
+  sctx.fillStyle = rgb(P.sun);
+  sctx.beginPath(); sctx.arc(sunPos.x,sunPos.y,sunPos.r,0,6.2832); sctx.fill();
+
+  // parallax hills (flat silhouettes), far->near
+  for(var L=0; L<hills.length; L++){
+    var hl = hills[L];
+    var shade = lerpC(P.sky, P.hill, 0.45 + L*0.22);
+    sctx.fillStyle = rgb(shade);
+    sctx.beginPath();
+    sctx.moveTo(0,H);
+    for(var p=0;p<hl.pts.length;p++) sctx.lineTo(hl.pts[p].x, hl.pts[p].y);
+    sctx.lineTo(W,H); sctx.closePath(); sctx.fill();
+  }
+
+  // terrain ground (flat fill)
+  sctx.fillStyle = rgb(P.ground);
+  sctx.beginPath();
+  sctx.moveTo(0,H);
+  sctx.lineTo(terrain[0].x, terrain[0].y);
+  for(var i2=1;i2<terrain.length;i2++) sctx.lineTo(terrain[i2].x,terrain[i2].y);
+  sctx.lineTo(W,H); sctx.closePath(); sctx.fill();
+
+  // flag pole + flag
+  var fx=hole.x, fy=hole.cupY;
+  sctx.strokeStyle = rgb(P.cup); sctx.lineWidth=Math.max(2,W*0.004);
+  sctx.beginPath(); sctx.moveTo(fx,fy); sctx.lineTo(fx,fy-hole.flagH); sctx.stroke();
+  sctx.fillStyle = rgb(P.flag);
+  var fw=hole.flagH*0.5, fh=hole.flagH*0.28;
+  var wave=Math.sin(time*3.0)*fh*0.18;
+  sctx.beginPath();
+  sctx.moveTo(fx,fy-hole.flagH);
+  sctx.lineTo(fx+fw,fy-hole.flagH+fh*0.5+wave);
+  sctx.lineTo(fx,fy-hole.flagH+fh);
+  sctx.closePath(); sctx.fill();
+  // cup notch
+  sctx.fillStyle=rgb(P.cup);
+  sctx.fillRect(fx-ball.radius*0.7, fy-2, ball.radius*1.4, 4);
+
+  // ball
+  sctx.fillStyle = rgb(P.ball);
+  sctx.beginPath(); sctx.arc(ball.x,ball.y,ball.radius,0,6.2832); sctx.fill();
+
+  // aim guide when at rest
+  if(ball.rest && aim.active){
+    sctx.strokeStyle = rgb(P.ball); sctx.globalAlpha=0.5;
+    sctx.setLineDash([6,8]); sctx.lineWidth=2;
+    sctx.beginPath(); sctx.moveTo(ball.x,ball.y); sctx.lineTo(aim.x,aim.y); sctx.stroke();
+    sctx.setLineDash([]); sctx.globalAlpha=1;
+  }
+}
+
+// =========================================================================
+//  DRAW: ID BUFFER  (low-res, flat region codes in RED channel)
+//  We encode id as id/255 in R. Shader multiplies back by 255.
+// =========================================================================
+function drawIdBuffer(){
+  var s=ID_SCALE;
+  ictx.setTransform(1,0,0,1,0,0);
+  ictx.clearRect(0,0,idc.width,idc.height);
+  ictx.save();
+  ictx.scale(s*DPR, s*DPR);
+
+  function setId(id){ ictx.fillStyle='rgb('+id+',0,0)'; ictx.strokeStyle='rgb('+id+',0,0)'; }
+
+  var P=PLANETS[planetIdx];
+  // sky
+  setId(ID_SKY); ictx.fillRect(0,0,W,H);
+  // sun
+  setId(ID_SUN); ictx.beginPath(); ictx.arc(sunPos.x,sunPos.y,sunPos.r,0,6.2832); ictx.fill();
+  // hills
+  setId(ID_HILL);
+  for(var L=0;L<hills.length;L++){
+    var hl=hills[L];
+    ictx.beginPath(); ictx.moveTo(0,H);
+    for(var p=0;p<hl.pts.length;p++) ictx.lineTo(hl.pts[p].x,hl.pts[p].y);
+    ictx.lineTo(W,H); ictx.closePath(); ictx.fill();
+  }
+  // ground
+  setId(ID_GROUND);
+  ictx.beginPath(); ictx.moveTo(0,H); ictx.lineTo(terrain[0].x,terrain[0].y);
+  for(var i=1;i<terrain.length;i++) ictx.lineTo(terrain[i].x,terrain[i].y);
+  ictx.lineTo(W,H); ictx.closePath(); ictx.fill();
+  // flag
+  setId(ID_FLAG);
+  ictx.lineWidth=Math.max(2,W*0.004);
+  ictx.beginPath(); ictx.moveTo(hole.x,hole.cupY); ictx.lineTo(hole.x,hole.cupY-hole.flagH); ictx.stroke();
+  var fw=hole.flagH*0.5, fh=hole.flagH*0.28;
+  ictx.beginPath(); ictx.moveTo(hole.x,hole.cupY-hole.flagH);
+  ictx.lineTo(hole.x+fw,hole.cupY-hole.flagH+fh*0.5);
+  ictx.lineTo(hole.x,hole.cupY-hole.flagH+fh); ictx.closePath(); ictx.fill();
+  // ball
+  setId(ID_BALL); ictx.beginPath(); ictx.arc(ball.x,ball.y,ball.radius,0,6.2832); ictx.fill();
+
+  ictx.restore();
+}
+
+// helpers
+function rgb(c){ return 'rgb('+(c[0]|0)+','+(c[1]|0)+','+(c[2]|0)+')'; }
+function lerpC(a,b,t){ return [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t]; }
+
+// =========================================================================
+//  WEBGL1 POST
+// =========================================================================
+var gl=null, prog=null, quad=null, texScene=null, texId=null, texBlue=null;
+var uni={};
+var glcanvas=document.getElementById('gl');
+
+var VERT = [
+'attribute vec2 aPos;',
+'varying vec2 vUv;',
+'void main(){ vUv = aPos*0.5+0.5; gl_Position=vec4(aPos,0.0,1.0); }'
+].join('\n');
+
+var FRAG = [
+'precision highp float;',
+'varying vec2 vUv;',
+'uniform sampler2D uScene;',
+'uniform sampler2D uId;',
+'uniform sampler2D uBlue;',
+'uniform vec2  uRes;',
+'uniform float uTime;',
+// effect amounts 0..1
+'uniform float uPalette, uHalftone, uDither, uGrain, uOutline, uPlasma, uBloom, uVignette;',
+'uniform float uFlash, uShake;',
+'uniform float uSpace;',
+// palette stops (planet)
+'uniform vec3 uSky,uGround,uHill,uSun,uPaper,uInk,uBall,uFlag,uCup;',
+'',
+'float hash(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }',
+'',
+// region id lookup (low res buffer, red channel * 255)
+'float regionId(vec2 uv){ return floor(texture2D(uId,uv).r*255.0 + 0.5); }',
+'',
+// map an id to a palette base color
+'vec3 idColor(float id){',
+'  if(id<1.5) return uSky;',
+'  if(id<2.5) return uGround;',
+'  if(id<3.5) return uBall;',
+'  if(id<4.5) return uFlag;',
+'  if(id<5.5) return uCup;',
+'  if(id<6.5) return uSun;',
+'  if(id<7.5) return uHill;',
+'  return uSky;',
+'}',
+'',
+// Balatro-style paint swirl, mapped through 3 stops
+'vec3 plasma(vec2 uv, vec3 c1, vec3 c2, vec3 c3){',
+'  vec2 p = (uv-0.5); p.x *= uRes.x/uRes.y;',
+'  float len=length(p);',
+'  float speed = uTime*0.25 + 302.2;',
+'  float ang = atan(p.y,p.x) + speed - 20.0*(0.7*len + 0.3);',
+'  p = vec2(len*cos(ang), len*sin(ang))*22.0;',
+'  vec2 uv2=vec2(p.x+p.y);',
+'  for(int i=0;i<5;i++){',
+'    uv2 += sin(max(p.x,p.y)) + p;',
+'    p += 0.5*vec2(cos(5.1123+0.353*uv2.y+speed*0.131), sin(uv2.x-0.113*speed));',
+'    p -= cos(p.x+p.y) - sin(p.x*0.711 - p.y);',
+'  }',
+'  float paint = min(2.0, max(0.0, length(p)*0.0035));',
+'  float a = max(0.0, 1.0-1.4*abs(1.0-paint));',
+'  float b = max(0.0, 1.0-1.4*abs(paint));',
+'  float cc= 1.0-min(1.0,a+b);',
+'  return a*c1 + b*c2 + cc*c3;',
+'}',
+'',
+// 4x4 bayer
+'float bayer4(vec2 fc){',
+'  vec2 p=mod(fc,4.0); int x=int(p.x), y=int(p.y); int idx=x+y*4;',
+'  float m=0.0;',
+'  if(idx==0)m=0.0; else if(idx==1)m=8.0; else if(idx==2)m=2.0; else if(idx==3)m=10.0;',
+'  else if(idx==4)m=12.0; else if(idx==5)m=4.0; else if(idx==6)m=14.0; else if(idx==7)m=6.0;',
+'  else if(idx==8)m=3.0; else if(idx==9)m=11.0; else if(idx==10)m=1.0; else if(idx==11)m=9.0;',
+'  else if(idx==12)m=15.0; else if(idx==13)m=7.0; else if(idx==14)m=13.0; else m=5.0;',
+'  return m/16.0;',
+'}',
+'',
+'void main(){',
+'  vec2 uv=vUv;',
+'  vec2 fc=gl_FragCoord.xy;',
+'',
+// micro screen warble (uShake adds kick)
+'  float warb = 0.0015 + 0.004*uShake;',
+'  uv += warb*vec2(sin(uv.y*30.0+uTime*1.3), cos(uv.x*26.0+uTime*1.1));',
+'',
+'  vec3 scene = texture2D(uScene, uv).rgb;',
+'  float id = regionId(uv);',
+'',
+// PLASMA SKY: replace sky region with animated paint field
+'  if(uPlasma>0.001 && id>0.5 && id<1.5){',
+'    vec3 c1 = uSky;',
+'    vec3 c2 = mix(uSky, uHill, 0.5);',
+'    vec3 c3 = mix(uSky, uSun, uSpace>0.5?0.15:0.35);',
+'    vec3 pl = plasma(uv, c1, c2, c3);',
+'    scene = mix(scene, pl, uPalette*uPlasma);',
+'  }',
+'',
+// PALETTE SNAP: pull each region toward its palette stop (keyed by ID, not luminance)
+'  if(uPalette>0.001){',
+'    vec3 target = idColor(id);',
+'    scene = mix(scene, target, uPalette*0.85);',
+'  }',
+'',
+// OUTLINE: sobel on the ID buffer -> ink the region boundaries
+'  if(uOutline>0.001){',
+'    vec2 px=1.0/(uRes*0.5);', // id buffer is ~half res
+'    float c = regionId(uv);',
+'    float e=0.0;',
+'    e += abs(regionId(uv+vec2(px.x,0.0))-c);',
+'    e += abs(regionId(uv-vec2(px.x,0.0))-c);',
+'    e += abs(regionId(uv+vec2(0.0,px.y))-c);',
+'    e += abs(regionId(uv-vec2(0.0,px.y))-c);',
+'    float edge = clamp(e,0.0,1.0);',
+'    scene = mix(scene, uInk, edge*uOutline*0.9);',
+'  }',
+'',
+// HALFTONE / RISO: AM dots whose size tracks region tone, in rotated screen space
+'  if(uHalftone>0.001){',
+'    float ang=0.40;',
+'    mat2 R=mat2(cos(ang),-sin(ang),sin(ang),cos(ang));',
+'    float freq = uRes.y/7.0;',
+'    vec2 hp = R*uv*freq;',
+'    vec2 cell = fract(hp)-0.5;',
+'    float d = length(cell);',
+'    float tone = clamp(dot(scene, vec3(0.4)) ,0.0,1.0);', // dot size by local color mass
+'    float radius = mix(0.05,0.62, 1.0-tone);',
+'    float dot = smoothstep(radius+0.06, radius-0.06, d);',
+'    vec3 inked = mix(scene, scene*0.86, dot);', // subtle: darken under dots
+'    scene = mix(scene, inked, uHalftone);',
+'  }',
+'',
+// BLOOM (cheap, screen-space): sample bright sun/flag-ish & flash
+'  if(uBloom>0.001){',
+'    vec3 br = max(scene-0.62,0.0);',
+'    float b = dot(br,vec3(0.6));',
+'    scene += b*uBloom*0.8;',
+'    // event flash whitens toward paper',
+'    scene = mix(scene, uPaper, uFlash*0.5*uBloom + uFlash*0.15);',
+'  }',
+'',
+// PALETTE QUANTIZE + DITHER (per channel -> preserves hue, no luminance collapse)
+'  if(uDither>0.001){',
+'    float dval = mix(bayer4(fc), texture2D(uBlue, fc/64.0).r, 0.6);',
+'    float levels = mix(24.0, 5.0, uDither);',
+'    vec3 q = floor(scene*levels + (dval-0.5))/levels;',
+'    scene = mix(scene, q, uDither);',
+'  }',
+'',
+// GRAIN / paper
+'  if(uGrain>0.001){',
+'    float g = hash(fc + floor(uTime*24.0));',
+'    scene += (g-0.5)*0.10*uGrain;',
+'    // paper tint pull',
+'    scene = mix(scene, scene*uPaper*1.4, 0.04*uGrain);',
+'  }',
+'',
+// VIGNETTE
+'  if(uVignette>0.001){',
+'    vec2 q=uv-0.5; float v=smoothstep(0.85,0.35,length(q));',
+'    scene *= mix(1.0, v, uVignette*0.7);',
+'  }',
+'',
+'  gl_FragColor=vec4(clamp(scene,0.0,1.0),1.0);',
+'}'
+].join('\n');
+
+function compile(type,src){
+  var s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){
+    console.error(gl.getShaderInfoLog(s)); console.error(src);
+    throw new Error('shader compile failed');
+  }
+  return s;
+}
+
+function initGL(){
+  gl = glcanvas.getContext('webgl',{alpha:false,antialias:false,preserveDrawingBuffer:false,powerPreference:'high-performance'})
+    || glcanvas.getContext('experimental-webgl',{alpha:false});
+  if(!gl){ document.body.innerHTML='<p style="padding:2rem">WebGL1 not available.</p>'; return false; }
+
+  prog=gl.createProgram();
+  gl.attachShader(prog,compile(gl.VERTEX_SHADER,VERT));
+  gl.attachShader(prog,compile(gl.FRAGMENT_SHADER,FRAG));
+  gl.bindAttribLocation(prog,0,'aPos');
+  gl.linkProgram(prog);
+  if(!gl.getProgramParameter(prog,gl.LINK_STATUS)){ console.error(gl.getProgramInfoLog(prog)); return false; }
+  gl.useProgram(prog);
+
+  quad=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,quad);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 3,-1, -1,3]),gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+
+  texScene=makeTex(); texId=makeTex(); texBlue=makeBlueNoise();
+
+  ['uScene','uId','uBlue','uRes','uTime','uPalette','uHalftone','uDither','uGrain',
+   'uOutline','uPlasma','uBloom','uVignette','uFlash','uShake','uSpace',
+   'uSky','uGround','uHill','uSun','uPaper','uInk','uBall','uFlag','uCup']
+   .forEach(function(n){ uni[n]=gl.getUniformLocation(prog,n); });
+
+  gl.uniform1i(uni.uScene,0); gl.uniform1i(uni.uId,1); gl.uniform1i(uni.uBlue,2);
+  return true;
+}
+
+function makeTex(){
+  var t=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,t);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  return t;
+}
+function makeBlueNoise(){
+  // generate a 64x64 pseudo blue-noise-ish tile (void-and-cluster is overkill here)
+  var N=64, data=new Uint8Array(N*N*4);
+  // start white noise then do a few smoothing/repel passes for a bluish spectrum
+  var v=new Float32Array(N*N);
+  for(var i=0;i<N*N;i++) v[i]=Math.random();
+  for(var pass=0;pass<2;pass++){
+    var nv=new Float32Array(N*N);
+    for(var y=0;y<N;y++)for(var x=0;x<N;x++){
+      var s=0,c=0;
+      for(var dy=-1;dy<=1;dy++)for(var dx=-1;dx<=1;dx++){
+        var xx=(x+dx+N)%N, yy=(y+dy+N)%N; s+=v[yy*N+xx]; c++;
+      }
+      var local=v[y*N+x], avg=s/c;
+      nv[y*N+x]=local + (local-avg)*0.8; // high-pass -> push toward blue
+    }
+    // renormalize
+    var mn=1e9,mx=-1e9;
+    for(var k=0;k<N*N;k++){ if(nv[k]<mn)mn=nv[k]; if(nv[k]>mx)mx=nv[k]; }
+    for(var k2=0;k2<N*N;k2++) v[k2]=(nv[k2]-mn)/(mx-mn+1e-6);
+  }
+  for(var p=0;p<N*N;p++){ var val=Math.max(0,Math.min(255,v[p]*255))|0;
+    data[p*4]=val; data[p*4+1]=val; data[p*4+2]=val; data[p*4+3]=255; }
+  var t=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,t);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,N,N,0,gl.RGBA,gl.UNSIGNED_BYTE,data);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+  return t;
+}
+
+var texAllocated=false, lastTexW=0,lastTexH=0;
+function uploadTextures(){
+  // scene texture (full res)
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,texScene);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true);
+  if(!texAllocated || lastTexW!==scene.width || lastTexH!==scene.height){
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,scene);
+    lastTexW=scene.width; lastTexH=scene.height;
+  } else {
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,scene);
+  }
+  // id texture (low res)
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D,texId);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,idc);
+  // id should be crisp (nearest) so regions stay hard-edged
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);
+  texAllocated=true;
+}
+
+// =========================================================================
+//  PRESETS / MODES / UI STATE
+// =========================================================================
+var fx={ palette:1.0, halftone:0.7, dither:0.55, grain:0.45, outline:0.6,
+         plasma:0.65, bloom:0.4, vignette:0.5 };
+var mode='post'; // post|raw|split
+var presets=[
+  {name:'Full',  v:{palette:1.0,halftone:0.7,dither:0.55,grain:0.45,outline:0.6,plasma:0.65,bloom:0.4,vignette:0.5}},
+  {name:'Clean', v:{palette:0.9,halftone:0.0,dither:0.0,grain:0.15,outline:0.5,plasma:0.4,bloom:0.3,vignette:0.35}},
+  {name:'Print', v:{palette:1.0,halftone:1.0,dither:0.8,grain:0.7,outline:0.8,plasma:0.3,bloom:0.2,vignette:0.6}},
+  {name:'Off',   v:{palette:0,halftone:0,dither:0,grain:0,outline:0,plasma:0,bloom:0,vignette:0}}
+];
+var presetIdx=0;
+
+function applyPreset(p){
+  for(var k in p.v){ fx[k]=p.v[k]; }
+  syncSliders();
+}
+function syncSliders(){
+  setS('palette'); setS('halftone'); setS('dither'); setS('grain');
+  setS('outline'); setS('plasma'); setS('bloom'); setS('vignette');
+}
+function setS(k){
+  var el=document.getElementById('s_'+k); if(!el)return;
+  el.value=Math.round(fx[k]*100);
+  document.getElementById('v_'+k).textContent=Math.round(fx[k]*100);
+}
+
+// =========================================================================
+//  RESIZE
+// =========================================================================
+function resize(){
+  DPR=Math.min(window.devicePixelRatio||1, 3);
+  var availH=window.innerHeight, availW=window.innerWidth;
+  // portrait phone aspect 1170x2532 ~ 0.462; fit into window keeping aspect
+  var targetAspect=1170/2532;
+  var cssH=availH, cssW=cssH*targetAspect;
+  if(cssW>availW){ cssW=availW; cssH=cssW/targetAspect; }
+  glcanvas.style.width=cssW+'px'; glcanvas.style.height=cssH+'px';
+
+  W=Math.round(cssW); H=Math.round(cssH);
+  // render at reduced resolution for mobile perf (0.75x of DPR)
+  var renderScale=Math.min(DPR,2)*0.85;
+  scene.width=Math.round(W*renderScale); scene.height=Math.round(H*renderScale);
+  // we draw the 2D scene in CSS px space scaled up
+  sctx.setTransform(scene.width/W,0,0,scene.height/H,0,0);
+
+  idc.width=Math.round(W*ID_SCALE*DPR); idc.height=Math.round(H*ID_SCALE*DPR);
+
+  glcanvas.width=scene.width; glcanvas.height=scene.height;
+  gl.viewport(0,0,glcanvas.width,glcanvas.height);
+
+  regenWorld();
+}
+
+// =========================================================================
+//  INPUT
+// =========================================================================
+var aim={active:false,x:0,y:0};
+function toScene(ev){
+  var r=glcanvas.getBoundingClientRect();
+  var cx=(ev.touches?ev.touches[0].clientX:ev.clientX);
+  var cy=(ev.touches?ev.touches[0].clientY:ev.clientY);
+  return { x:(cx-r.left)/r.width*W, y:(cy-r.top)/r.height*H };
+}
+glcanvas.addEventListener('pointerdown',function(e){
+  var p=toScene(e); aim.active=true; aim.x=p.x; aim.y=p.y;
+});
+glcanvas.addEventListener('pointermove',function(e){
+  if(!aim.active)return; var p=toScene(e); aim.x=p.x; aim.y=p.y;
+});
+window.addEventListener('pointerup',function(e){
+  if(!aim.active)return; aim.active=false;
+  putt(aim.x,aim.y);
+  hideHint();
+});
+
+// =========================================================================
+//  HUD WIRING
+// =========================================================================
+function bindSlider(k){
+  var el=document.getElementById('s_'+k);
+  el.addEventListener('input',function(){
+    fx[k]=el.value/100; document.getElementById('v_'+k).textContent=el.value;
+  });
+}
+['palette','halftone','dither','grain','outline','plasma','bloom','vignette'].forEach(bindSlider);
+
+document.getElementById('modeSeg').addEventListener('click',function(e){
+  var b=e.target.closest('.btn'); if(!b)return;
+  mode=b.dataset.mode;
+  [].forEach.call(this.querySelectorAll('.btn'),function(x){x.classList.toggle('active',x===b);});
+});
+document.getElementById('planetBtn').addEventListener('click',function(){
+  planetIdx=(planetIdx+1)%PLANETS.length;
+  this.textContent='Planet: '+PLANETS[planetIdx].name;
+  regenWorld();
+});
+document.getElementById('presetBtn').addEventListener('click',function(){
+  presetIdx=(presetIdx+1)%presets.length;
+  this.textContent='Preset: '+presets[presetIdx].name;
+  applyPreset(presets[presetIdx]);
+});
+var hud=document.getElementById('hud'), grip=document.getElementById('grip'), gripState=document.getElementById('gripState');
+grip.addEventListener('click',function(){
+  hud.classList.toggle('collapsed');
+  gripState.textContent=hud.classList.contains('collapsed')?'show ▴':'hide ▾';
+});
+var hintEl=document.getElementById('hint');
+function hideHint(){ hintEl.style.opacity='0'; }
+
+// =========================================================================
+//  RENDER LOOP
+// =========================================================================
+var lastT=performance.now(), tAccum=0, frames=0, fpsT=0;
+function frame(now){
+  var dt=Math.min(0.033,(now-lastT)/1000); lastT=now;
+  tAccum+=dt;
+
+  // decay event values
+  flash=Math.max(0,flash-dt*1.6);
+  camShake=Math.max(0,camShake-dt*2.2);
+
+  stepPhysics(dt);
+  drawScene(tAccum);
+  drawIdBuffer();
+  uploadTextures();
+
+  // uniforms
+  gl.useProgram(prog);
+  gl.uniform2f(uni.uRes, glcanvas.width, glcanvas.height);
+  gl.uniform1f(uni.uTime, tAccum);
+
+  // mode gating
+  var m=(mode==='raw')?0:1;
+  var splitX = (mode==='split')?0.5:-1.0;
+  // For raw/split we modulate amounts; split handled by mixing in shader would need uniform—
+  // simpler: for 'raw' set all fx to 0; for 'split' we draw post but raw on left via scissor.
+  var eff = (mode==='raw') ? {palette:0,halftone:0,dither:0,grain:0,outline:0,plasma:0,bloom:0,vignette:0} : fx;
+
+  gl.uniform1f(uni.uPalette, eff.palette);
+  gl.uniform1f(uni.uHalftone, eff.halftone);
+  gl.uniform1f(uni.uDither, eff.dither);
+  gl.uniform1f(uni.uGrain, eff.grain);
+  gl.uniform1f(uni.uOutline, eff.outline);
+  gl.uniform1f(uni.uPlasma, eff.plasma);
+  gl.uniform1f(uni.uBloom, eff.bloom);
+  gl.uniform1f(uni.uVignette, eff.vignette);
+  gl.uniform1f(uni.uFlash, flash);
+  gl.uniform1f(uni.uShake, camShake);
+
+  var P=PLANETS[planetIdx];
+  gl.uniform1f(uni.uSpace, P.space?1.0:0.0);
+  set3(uni.uSky,P.sky); set3(uni.uGround,P.ground); set3(uni.uHill,P.hill);
+  set3(uni.uSun,P.sun); set3(uni.uPaper,P.paper); set3(uni.uInk,P.ink);
+  set3(uni.uBall,P.ball); set3(uni.uFlag,P.flag); set3(uni.uCup,P.cup);
+
+  if(mode==='split'){
+    // left half raw, right half post — via scissor + two draws
+    gl.enable(gl.SCISSOR_TEST);
+    // right (post)
+    gl.scissor(glcanvas.width/2,0,glcanvas.width/2,glcanvas.height);
+    gl.drawArrays(gl.TRIANGLES,0,3);
+    // left (raw): zero all fx
+    gl.uniform1f(uni.uPalette,0);gl.uniform1f(uni.uHalftone,0);gl.uniform1f(uni.uDither,0);
+    gl.uniform1f(uni.uGrain,0);gl.uniform1f(uni.uOutline,0);gl.uniform1f(uni.uPlasma,0);
+    gl.uniform1f(uni.uBloom,0);gl.uniform1f(uni.uVignette,0);
+    gl.scissor(0,0,glcanvas.width/2,glcanvas.height);
+    gl.drawArrays(gl.TRIANGLES,0,3);
+    gl.disable(gl.SCISSOR_TEST);
+  } else {
+    gl.drawArrays(gl.TRIANGLES,0,3);
+  }
+
+  // fps
+  frames++; fpsT+=dt;
+  if(fpsT>=0.5){ document.getElementById('fps').textContent=Math.round(frames/fpsT)+' fps';
+    frames=0; fpsT=0; }
+
+  requestAnimationFrame(frame);
+}
+function set3(loc,c){ gl.uniform3f(loc, c[0]/255, c[1]/255, c[2]/255); }
+
+// =========================================================================
+//  BOOT
+// =========================================================================
+if(initGL()){
+  resize();
+  window.addEventListener('resize',resize);
+  applyPreset(presets[0]);
+  document.getElementById('planetBtn').textContent='Planet: '+PLANETS[planetIdx].name;
+  requestAnimationFrame(frame);
+}
+})();
+</script>
+</body>
+</html>
